@@ -41,7 +41,9 @@ ldd AES.so
 ```
 AES.mcrypt_module_open(algorithm, mode)
  
-    用指定算法（algorithm）和指定模式（mode）打开加密模块，调用成功返回一个句柄，调用失败返回nil以及一个描述错误信息的字符串
+    用指定算法（algorithm）和指定模式（mode）打开加密模块，
+    调用成功返回一个句柄，调用失败返回nil以及一个描述错误信息的字符串
+
 支持的加密算法有以几种，默认的AES标准是使用 rijndael-128 算法
 * blowfish
 * des
@@ -77,7 +79,8 @@ AES.mcrypt_module_open(algorithm, mode)
 ```
 AES.mcrypt_enc_get_key_size(td)
  
-    获取打开的加密模块支持的key的最大长度，参数为调用AES.mcrypt_module_open返回的句柄，调用成功返回一个整数，失败返回nil和一个描述错误信息的字符串。
+    获取打开的加密模块支持的key的最大长度，参数为调用AES.mcrypt_module_open返回的句柄，
+    调用成功返回一个整数，失败返回nil和一个描述错误信息的字符串。
 ```
 
 ```
@@ -119,7 +122,8 @@ AES.mdecrypt_generic(td, text)
 ```
 AES.bintohex(bin_string)
  
-    二进制数据转换为十六进制表示的字符串，成功返回转换后的字符串，失败返回nil和一个描述错误信息的字符串，可以用该方法转换加密后的数据为人类可读的形式
+    二进制数据转换为十六进制表示的字符串，成功返回转换后的字符串，失败返回nil和一个描述错误信息的字符串，
+    可以用该方法转换加密后的数据为人类可读的形式
 ```
 
 ```
