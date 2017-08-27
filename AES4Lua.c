@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 static int push_error(lua_State *L, const char *errmsg)
 {			
@@ -16,8 +17,8 @@ static int push_error(lua_State *L, const char *errmsg)
  */
 static int lua_mcrypt_module_open(lua_State *L)
 {
-	char *algorithm = lua_tostring(L, 1);
-	char *mode = lua_tostring(L, 2);
+	char *algorithm = (char *)lua_tostring(L, 1);
+	char *mode = (char *)lua_tostring(L, 2);
 
 	MCRYPT td;
 	td = mcrypt_module_open(algorithm, NULL, mode, NULL);
@@ -102,14 +103,14 @@ static int lua_mcrypt_generic_init(lua_State *L)
         }
 	
 	size_t keysize, ivsize;
-	char *key = lua_tolstring(L, 2, &keysize);
+	char *key = (char *)lua_tolstring(L, 2, &keysize);
 
 	if (keysize > mcrypt_enc_get_key_size(*td))
 	{
 		return push_error(L, "mcrypt_generic_init: the length of key exceeds limit");
 	}
 
-	char *iv = lua_tolstring(L, 3, &ivsize);
+	char *iv = (char *)lua_tolstring(L, 3, &ivsize);
 
 	if (ivsize > mcrypt_enc_get_iv_size(*td))
 	{
@@ -127,6 +128,31 @@ static int lua_mcrypt_generic_init(lua_State *L)
 	lua_pushinteger(L, 1);
 	return 1;
 }
+
+/**
+ * 清理缓冲区
+ */
+static int lua_mcrypt_generic_deinit(lua_State *L)
+{
+	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+
+        if (NULL == td)
+        {       
+                return push_error(L, "mcrypt_generic_deinit: param is not type of userdata");
+        }
+
+	int ret = mcrypt_generic_deinit(*td);
+
+	if (ret < 0)
+	{
+		return push_error(L, "mcrypt_generic_deinit: deinit fail");
+	}
+
+	lua_pushinteger(L, 1);
+		
+	return 1;
+}
+
 
 /**
  * 加密
@@ -157,9 +183,9 @@ static int lua_mcrypt_generic(lua_State *L)
 
 	if (ret != 0)
 	{
-		free(buffer);
 		char errmsg[512] = {'\0'};
 		sprintf(errmsg, "%s: %s", "mcrypt_generic", mcrypt_strerror(ret));
+		free(buffer);
 		return push_error(L, errmsg);
 	}
 	else
@@ -170,6 +196,46 @@ static int lua_mcrypt_generic(lua_State *L)
 	}
 }
 
+/**
+ * 解密
+ */
+static int lua_mdecrypt_generic(lua_State *L)
+{
+	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+        if (NULL == td)
+        {       
+                return push_error(L, "mdecrypt_generic: param is not type of userdata");
+        }
+
+        size_t textlen;
+        const char *text = lua_tolstring(L, 2, &textlen);
+
+        int blocksize = mcrypt_enc_get_block_size(*td);  //获取加密块大小
+        
+	if (textlen % blocksize != 0)
+        {
+                return push_error(L, "The length of param is not equal to blocksize * k");
+        }
+
+        char *buffer = (char *)calloc(textlen, 1);
+        memcpy(buffer, text, textlen);
+
+        int ret = mdecrypt_generic(*td, buffer, textlen);
+
+        if (ret != 0)
+        {
+                char errmsg[512] = {'\0'};
+                sprintf(errmsg, "%s: %s", "mdecrypt_generic", mcrypt_strerror(ret));
+                free(buffer);
+                return push_error(L, errmsg);
+        }
+        else
+        {
+                lua_pushlstring(L, buffer, textlen);
+                free(buffer);
+                return 1;
+        }	
+}
 
 /**
  * 二进制转十六进制形式字符串
@@ -198,6 +264,54 @@ static int bintohex(lua_State *L)
 }
 
 /**
+ * 单个十六进制字符转成相应整数
+ */
+static int hexchartoint(char h)
+{
+	if (h >= '0' && h <= '9')
+	{
+		return h - '0';
+	}
+	h = toupper(h);
+	return h - 55;
+}
+
+/**
+ * 十六进制字符串转二进制
+ */
+static int hextobin(lua_State *L)
+{
+	int i;
+	char c;
+	size_t hexlen, binlen;
+	const char *hex = lua_tolstring(L, 1, &hexlen);
+	if (hexlen % 2 != 0)
+	{
+		return push_error(L, "hextobin: the length of param is not even");
+	}
+
+	binlen = hexlen / 2;
+	char *bin = calloc(binlen, 1);
+	for(i = 0; i < hexlen; i++)
+	{
+		if (i % 2 == 0)
+		{
+			c = 0;
+			c += hexchartoint(hex[i]) * 16;		
+		}	
+		else
+		{
+			c += hexchartoint(hex[i]);
+			bin[i/2] = c;
+		}
+	}
+	lua_pushlstring(L, bin, binlen);
+	free(bin);
+	return 1;
+}
+
+
+/**
  * 关闭加密模块
  */
 static int lua_mcrypt_module_close(lua_State *L)
@@ -219,9 +333,12 @@ static const struct luaL_Reg funcs[] = {
 	{"mcrypt_enc_get_key_size", lua_mcrypt_enc_get_key_size},
 	{"mcrypt_enc_get_block_size", lua_mcrypt_enc_get_block_size},
 	{"mcrypt_generic_init", lua_mcrypt_generic_init},
+	{"mcrypt_generic_deinit", lua_mcrypt_generic_deinit},
 	{"mcrypt_generic", lua_mcrypt_generic},
+	{"mdecrypt_generic", lua_mdecrypt_generic},
 	{"mcrypt_module_close", lua_mcrypt_module_close},
 	{"bintohex", bintohex},
+	{"hextobin", hextobin},
         {NULL, NULL}
 };
 
