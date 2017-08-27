@@ -6,6 +6,6 @@
 ## Installation
 1. 安装libmcrypt开源库
 
-` wget  https://jaist.dl.sourceforge.net/project/mcrypt/Libmcrypt/2.5.8/libmcrypt-2.5.8.tar.gz 
-tar zxvf libmcrypt-2.5.8.tar.gz
-`
+` wget  https://jaist.dl.sourceforge.net/project/mcrypt/Libmcrypt/2.5.8/libmcrypt-2.5.8.tar.gz `
+` tar zxvf libmcrypt-2.5.8.tar.gz `
+` cd libmcrypt-2.5.8 `
