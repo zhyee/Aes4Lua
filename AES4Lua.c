@@ -5,13 +5,27 @@
 #include <stdlib.h>
 
 #include "utils.h"
+#include "AES4Lua.h"
 
-static int push_error(lua_State *L, const char *errmsg)
-{			
-	lua_pushnil(L);
-	lua_pushstring(L, errmsg);
-	return 2;	
-}
+#define PADDING_MODE_ZERO   0
+#define PADDING_MODE_PKCS5  1
+#define PADDING_MODE_PKCS7  2
+
+/**
+ * 数据长度不是加密块的整数倍时，可选的填充模式
+ */
+typedef enum _padding_mode {
+    NO_PADDING = 0,  //无填充
+    ZERO_PADDING = 1,  //数据补0
+    PKCS5_PADDING = 2, // 直接使用 PKCS7_PADDING
+    PKCS7_PADDING = 3  // PKCS5_PADDING 的升级版，对数据块的长度没有限制
+} padding_mode;
+
+typedef struct _lua_crypt {
+    padding_mode padmode;
+    MCRYPT  td;
+} lua_crypt;
+
 
 /**
  * 打开指定加密模块
@@ -21,17 +35,17 @@ static int lua_mcrypt_module_open(lua_State *L)
 	char *algorithm = (char *)lua_tostring(L, 1);
 	char *mode = (char *)lua_tostring(L, 2);
 
-	MCRYPT td;
-	td = mcrypt_module_open(algorithm, NULL, mode, NULL);
+	lua_crypt *lcp = (lua_crypt *)lua_newuserdata(L, sizeof(lua_crypt));
+
+	MCRYPT td = mcrypt_module_open(algorithm, NULL, mode, NULL);
 
 	if (MCRYPT_FAILED == td)
 	{
 		return push_error(L, "mcrypt_module_open: open module fail");
 	}
 
-	MCRYPT *p = (MCRYPT *)lua_newuserdata(L, sizeof(MCRYPT));
-
-	memcpy(p, &td, sizeof(p));
+    lcp->td = td;
+    
 	return 1;
 }
 
@@ -41,14 +55,14 @@ static int lua_mcrypt_module_open(lua_State *L)
  */
 static int lua_mcrypt_enc_get_iv_size(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
 	
-	if (NULL == td)
+	if (NULL == lcp)
 	{
 		return push_error(L, "mcrypt_enc_get_iv_size: param is not type of userdata");
 	}
 	
-	int len = mcrypt_enc_get_iv_size(*td);
+	int len = mcrypt_enc_get_iv_size(lcp->td);
 	
 	lua_pushinteger(L, len);
 
@@ -60,17 +74,33 @@ static int lua_mcrypt_enc_get_iv_size(lua_State *L)
  */
 static int lua_mcrypt_enc_get_key_size(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
 	
-	if (NULL == td)
+	if (NULL == lcp)
 	{
 		return push_error(L, "mcrypt_enc_get_key_size: param is not type of userdata");
 	}
-	int len = mcrypt_enc_get_key_size(*td);
+	int len = mcrypt_enc_get_key_size(lcp->td);
 
 	lua_pushinteger(L, len);
 
 	return 1;
+}
+
+
+/**
+ * 验证使用的加密模式是否支持分组模式
+ */
+static int lua_mcrypt_enc_is_block_algorithm_mode(lua_State *L)
+{
+    lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
+    if (NULL == lcp)
+    {
+        return push_error(L, "mcrypt_enc_is_block_algorithm_mode: param is not type of userdata");
+    }
+    int is_block = mcrypt_enc_is_block_algorithm_mode(lcp->td);
+    lua_pushboolean(L, is_block);
+    return 1;
 }
 
 /**
@@ -78,14 +108,14 @@ static int lua_mcrypt_enc_get_key_size(lua_State *L)
  */
 static int lua_mcrypt_enc_get_block_size(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
 	
-	if (NULL == td)
+	if (NULL == lcp)
 	{
 		return push_error(L, "mcrypt_enc_get_block_size: param is not type of userdata");
 	}
 
-	int len = mcrypt_enc_get_block_size(*td);
+	int len = mcrypt_enc_get_block_size(lcp->td);
 	lua_pushinteger(L, len);
 	
 	return 1;
@@ -96,29 +126,38 @@ static int lua_mcrypt_enc_get_block_size(lua_State *L)
  */
 static int lua_mcrypt_generic_init(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
         
-        if (NULL == td)
-        {       
-                return push_error(L, "mcrypt_generic_init: param is not type of userdata");
-        }
-	
+    if (NULL == lcp)
+    {       
+            return push_error(L, "mcrypt_generic_init: param is not type of userdata");
+    }
+
 	size_t keysize, ivsize;
 	char *key = (char *)lua_tolstring(L, 2, &keysize);
 
-	if (keysize > mcrypt_enc_get_key_size(*td))
+	if (keysize > mcrypt_enc_get_key_size(lcp->td))
 	{
 		return push_error(L, "mcrypt_generic_init: the length of key exceeds limit");
 	}
 
 	char *iv = (char *)lua_tolstring(L, 3, &ivsize);
 
-	if (ivsize > mcrypt_enc_get_iv_size(*td))
+	if (ivsize > mcrypt_enc_get_iv_size(lcp->td))
 	{
 		return push_error(L, "mcrypt_generic_init: the length of iv exceeds limit");
 	}
 
-	int ret = mcrypt_generic_init(*td, key, keysize, iv);
+    int pad_mode = lua_tointeger(L, 4);
+
+    if (pad_mode != NO_PADDING && pad_mode != ZERO_PADDING && pad_mode != PKCS5_PADDING && pad_mode != PKCS7_PADDING)
+    {
+        return push_error(L, "not surpport the padding mode");
+    }
+
+    lcp->padmode = pad_mode;
+
+	int ret = mcrypt_generic_init(lcp->td, key, keysize, iv);
 	if (ret < 0)
 	{
 		char errmsg[512] = {'\0'};
@@ -126,7 +165,7 @@ static int lua_mcrypt_generic_init(lua_State *L)
 		return push_error(L, errmsg);
 	}
 
-	lua_pushinteger(L, 1);
+	lua_pushboolean(L, 1);
 	return 1;
 }
 
@@ -135,21 +174,21 @@ static int lua_mcrypt_generic_init(lua_State *L)
  */
 static int lua_mcrypt_generic_deinit(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
 
-        if (NULL == td)
-        {       
-                return push_error(L, "mcrypt_generic_deinit: param is not type of userdata");
-        }
+    if (NULL == lcp)
+    {       
+            return push_error(L, "mcrypt_generic_deinit: param is not type of userdata");
+    }
 
-	int ret = mcrypt_generic_deinit(*td);
+	int ret = mcrypt_generic_deinit(lcp->td);
 
 	if (ret < 0)
 	{
 		return push_error(L, "mcrypt_generic_deinit: deinit fail");
 	}
 
-	lua_pushinteger(L, 1);
+	lua_pushboolean(L, 1);
 		
 	return 1;
 }
@@ -160,41 +199,68 @@ static int lua_mcrypt_generic_deinit(lua_State *L)
  */
 static int lua_mcrypt_generic(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
-	if (NULL == td)
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
+	if (NULL == lcp)
 	{
 		return push_error(L, "mcrypt_generic: param is not type of userdata");	
 	}
 
-	size_t textlen;
+    int blocksize, mod, i, ret;
+	size_t textlen, paddinglen, totallen;
+    unsigned char  paddingchar;
 	const char *text = lua_tolstring(L, 2, &textlen);
 
-	int encrylen = textlen;
-	int blocksize = mcrypt_enc_get_block_size(*td);  //获取加密块大小
-	int mod = textlen % blocksize;	
-	if (mod > 0)
-	{
-		encrylen = textlen - mod + blocksize;
-	}
+	blocksize = mcrypt_enc_get_block_size(lcp->td);  //获取加密块大小
+	mod = textlen % blocksize;	
 
-	char *buffer = (char *)calloc(encrylen, 1);
-	memcpy(buffer, text, textlen);	
+    paddinglen = 0;
+    switch(lcp->padmode)
+    {
+            case NO_PADDING:
+                    if(mod > 0)
+                    {
+                            return push_error(L, "mcrypt_generic: use NO_PADDING the data length must be blocksize * k");
+                    }
+                    break;
+            case ZERO_PADDING:
+                    if (mod > 0){
+                            paddinglen = blocksize - mod;
+                            paddingchar = '\0';
+                    }
+                    break;
+            case PKCS5_PADDING:
+            case PKCS7_PADDING:
+                    paddinglen = blocksize - mod;
+                    paddingchar = (unsigned char)paddinglen;
+                    break;
 
-	int ret = mcrypt_generic(*td, buffer, encrylen);
+    }
 
-	if (ret != 0)
-	{
-		char errmsg[512] = {'\0'};
-		sprintf(errmsg, "%s: %s", "mcrypt_generic", mcrypt_strerror(ret));
-		free(buffer);
-		return push_error(L, errmsg);
-	}
-	else
-	{	
-		lua_pushlstring(L, buffer, encrylen);
+    totallen = textlen + paddinglen;
+	char *buffer = (char *)calloc(totallen, 1);
+	memcpy(buffer, text, textlen);
+    if (paddinglen > 0)
+    {
+       memset(buffer+textlen, paddingchar, paddinglen); 
+    }
+
+    i = 0;
+    while((i * blocksize) < totallen)
+    {    
+	    ret = mcrypt_generic(lcp->td, buffer + (i * blocksize), blocksize);
+        if (ret != 0)
+        {
+                char errmsg[512] = {'\0'};
+                sprintf(errmsg, "%s: %s", "mcrypt_generic", mcrypt_strerror(ret));
+                free(buffer);
+                return push_error(L, errmsg);
+        }
+        i++;
+    }
+
+		lua_pushlstring(L, buffer, totallen);
 		free(buffer);
 		return 1;
-	}
 }
 
 /**
@@ -202,16 +268,17 @@ static int lua_mcrypt_generic(lua_State *L)
  */
 static int lua_mdecrypt_generic(lua_State *L)
 {
-	MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
-        if (NULL == td)
+	lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
+        if (NULL == lcp)
         {       
                 return push_error(L, "mdecrypt_generic: param is not type of userdata");
         }
 
-        size_t textlen;
+        size_t textlen, paddinglen;
+        int blocksize, i, ret;
         const char *text = lua_tolstring(L, 2, &textlen);
 
-        int blocksize = mcrypt_enc_get_block_size(*td);  //获取加密块大小
+        blocksize = mcrypt_enc_get_block_size(lcp->td);  //获取加密块大小
         
 	if (textlen % blocksize != 0)
         {
@@ -221,22 +288,57 @@ static int lua_mdecrypt_generic(lua_State *L)
         char *buffer = (char *)calloc(textlen, 1);
         memcpy(buffer, text, textlen);
 
-        int ret = mdecrypt_generic(*td, buffer, textlen);
-
-        if (ret != 0)
+        i = 0;
+        while((i * blocksize) < textlen)
         {
-                char errmsg[512] = {'\0'};
-                sprintf(errmsg, "%s: %s", "mdecrypt_generic", mcrypt_strerror(ret));
-                free(buffer);
-                return push_error(L, errmsg);
+            ret = mdecrypt_generic(lcp->td, buffer + (i * blocksize), blocksize);       
+            if (ret != 0)
+            {
+                    char errmsg[512] = {'\0'};
+                    sprintf(errmsg, "%s: %s", "mdecrypt_generic", mcrypt_strerror(ret));
+                    free(buffer);
+                    return push_error(L, errmsg);
+            }
+            i++;
         }
-        else
+
+        paddinglen = 0;
+        if (lcp->padmode == PKCS5_PADDING || lcp->padmode == PKCS7_PADDING)
         {
-                lua_pushlstring(L, buffer, textlen);
-                free(buffer);
-                return 1;
-        }	
+            paddinglen = buffer[textlen-1];
+        }
+
+        lua_pushlstring(L, buffer, textlen - paddinglen);
+        free(buffer);
+        return 1;	
 }
+
+/**
+ * 关闭加密模块
+ */
+static int lua_mcrypt_module_close(lua_State *L)
+{
+        lua_crypt *lcp = (lua_crypt *)lua_touserdata(L, 1);
+ 
+        if (NULL == lcp)
+        {
+		return push_error(L, "mcrypt_module_close: param is not type of userdata");
+        }
+	mcrypt_module_close(lcp->td);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/**
+ * 出错返回
+ */
+static int push_error(lua_State *L, const char *errmsg)
+{			
+	lua_pushnil(L);
+	lua_pushstring(L, errmsg);
+	return 2;	
+}
+
 
 /**
  * 二进制转十六进制形式字符串
@@ -300,26 +402,11 @@ static int hextobin(lua_State *L)
 }
 
 
-/**
- * 关闭加密模块
- */
-static int lua_mcrypt_module_close(lua_State *L)
-{
-        MCRYPT *td = (MCRYPT *)lua_touserdata(L, 1);
- 
-        if (NULL == td)
-        {
-		return push_error(L, "mcrypt_module_close: param is not type of userdata");
-        }
-	mcrypt_module_close(*td);
-	lua_pushinteger(L, 1);
-	return 1;
-}
-
 static const struct luaL_Reg funcs[] = {
-        {"mcrypt_module_open", lua_mcrypt_module_open},
+    {"mcrypt_module_open", lua_mcrypt_module_open},
 	{"mcrypt_enc_get_iv_size", lua_mcrypt_enc_get_iv_size},
 	{"mcrypt_enc_get_key_size", lua_mcrypt_enc_get_key_size},
+    {"mcrypt_enc_is_block_algorithm_mode", lua_mcrypt_enc_is_block_algorithm_mode},
 	{"mcrypt_enc_get_block_size", lua_mcrypt_enc_get_block_size},
 	{"mcrypt_generic_init", lua_mcrypt_generic_init},
 	{"mcrypt_generic_deinit", lua_mcrypt_generic_deinit},
@@ -328,7 +415,7 @@ static const struct luaL_Reg funcs[] = {
 	{"mcrypt_module_close", lua_mcrypt_module_close},
 	{"bintohex", bintohex},
 	{"hextobin", hextobin},
-        {NULL, NULL}
+    {NULL, NULL}
 };
 
 int luaopen_AES(lua_State *L)

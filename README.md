@@ -13,7 +13,8 @@ cd libmcrypt-2.5.8
 make
 make install
 ```
-2. 编译安装本模块
+2. 安装lua5.1
+3. 编译安装本模块
 
 把项目克隆到本地，修改Makefile中的**LIBLUAPATH**，**LIBMCRYPTPATH**，**INSTALLPATH** 三个路径为你当前环境的值
  
@@ -22,7 +23,7 @@ LIBLUAPATH = /path/to/liblua.so  #liblua.so 路径
 LIBMCRYPTPATH = /path/to/libmcrypt.so #libmcrypt.so 路径
 INSTALLPATH = /usr/lib64/lua/5.1  #你要安装动态库的路径
 ```
-然后 make  make install 即可， 如果没有报错说明安装成功, 可以键入命令make test 来看动态库加载是否正确，会输出类似以下信息：
+然后 make && make install 即可， 如果没有报错说明安装成功, 可以键入命令make test 来看动态库加载是否正确，会输出类似以下信息：
 ```
 [root@localhost AES4Lua]# make test
 ldd AES.so
@@ -77,45 +78,55 @@ AES.mcrypt_module_open(algorithm, mode)
 ```
 
 ```
-AES.mcrypt_enc_get_key_size(td)
+AES.mcrypt_enc_get_key_size(lcp)
  
     获取打开的加密模块支持的key的最大长度，参数为调用AES.mcrypt_module_open返回的句柄，
     调用成功返回一个整数，失败返回nil和一个描述错误信息的字符串。
 ```
 
 ```
-AES.mcrypt_enc_get_iv_size(td)
+AES.mcrypt_enc_get_iv_size(lcp)
  
     返回打开的加密模块支持的向量最大长度，用法同AES.mcrypt_enc_get_key_size
 ```
 
 ```
-AES.mcrypt_enc_get_block_size(td)
- 
-    对于分块加密的模式，返回每次加密块的长度，用法同AES.mcrypt_enc_get_key_size
+AES.mcrypt_enc_is_block_algorithm_mode(lcp)
+	检测该加密模式是否支持分组加密
 ```
 
 ```
-AES.mcrypt_generic_init(td, key, iv)
+AES.mcrypt_enc_get_block_size(lcp)
  
-    用指定秘钥key和向量iv初始化加密模块，调用成功返回1，否则返回nil和一个描述错误信息的字符串
+    对于分块加密的模式，返回加密块的长度，用法同AES.mcrypt_enc_get_key_size
+```
+
+```
+AES.mcrypt_generic_init(lcp, key, iv, padding_mode)
+ 
+    用指定秘钥key、向量iv和填充模式padding_mode 初始化加密模块，调用成功返回true，否则返回nil和一个描述错误信息的字符串
+	其中padding_mode 可以取 0 1 2 3：
+	0：无填充
+	1：用 '\0' 填充
+	2：pkcs5 padding
+	3：pkcs7 padding
     每次加密和解密前都应先调用此方法
 ```
 
 ```
-AES.mcrypt_generic_deinit(td)
+AES.mcrypt_generic_deinit(lcp)
  
     清理加密缓冲区，之后仍可以用AES.mcrypt_generic_init重新初始化
 ```
 
 ```
-AES.mcrypt_generic(td, text)
+AES.mcrypt_generic(lcp, text)
  
     加密字符串，调用成功返回加密后的字符串，否则返回nil和一个描述错误信息的字符串
 ```
 
 ```
-AES.mdecrypt_generic(td, text)
+AES.mdecrypt_generic(lcp, text)
  
     解密字符串， 用法同AES.mcrypt_generic
 ```
@@ -134,42 +145,52 @@ AES.hextobin(hex_string)
 ```
 
 ```
-AES.mcrypt_module_close(td)
+AES.mcrypt_module_close(lcp)
  
-    关闭打开的加密模块
+    关闭加密模块
 ```
 
 ## Examples
 
 ```
 local AES = require "AES"
- 
-local td = AES.mcrypt_module_open("rijndael-128", "ecb") --用指定算法和模式打开加密模块
- 
-AES.mcrypt_generic_init(td, "1234567890123456", "") --初始化加密所需的缓冲区
-local encrypt,err = AES.mcrypt_generic(td, "We meet at old place!") --加密
-print(AES.bintohex(encrypt))
- 
-AES.mcrypt_generic_init(td, "1234567890123456", "") --初始化加密所需的缓冲区
-print(AES.mdecrypt_generic(td, encrypt)) --解密 
- 
-AES.mcrypt_generic_deinit(td)  --释放加密缓冲区 之后可以用新的key和iv来初始化
- 
-AES.mcrypt_module_close(td)  -- 关闭加密模块
- 
+
+print("\n--------------------------ecb模式--------------------------\n")
+
+local lcp = AES.mcrypt_module_open("rijndael-128", "ecb") --用指定算法和模式打开加密模块
+
+AES.mcrypt_generic_init(lcp, "1234567890123456", "", 3) --初始化加密所需的缓冲区, 使用 PKCS7_PADDING
+local encrypt,err = AES.mcrypt_generic(lcp, "We meet at old place!") --加密
+
+print(AES.bintohex(encrypt));
+
+
+AES.mcrypt_generic_init(lcp, "1234567890123456", "", 3) --初始化加密所需的缓冲区
+print(AES.mdecrypt_generic(lcp, encrypt)) --解密 
+
+
+AES.mcrypt_generic_init(lcp, "1234567890123456", "", 1) --初始化加密所需的缓冲区, 使用 Zero_PADDING
+encrypt = "8c38c930acc6de42dfb4a5ce2724e98ad8b59848c7670c94b29b54d2379e2e7a"
+print(AES.mdecrypt_generic(lcp, AES.hextobin(encrypt))) --解密 
+
+AES.mcrypt_generic_deinit(lcp)  --释放加密缓冲区 之后可以用新的key和iv来初始化
+AES.mcrypt_module_close(lcp)  -- 关闭加密模块
+
+
 print("\n--------------------------cbc模式--------------------------\n")
- 
-td = AES.mcrypt_module_open("rijndael-128", "cbc")  -- 以cbc模式加密
- 
-AES.mcrypt_generic_init(td, "1234567890123456", "abcdefghijklmnop") -- cbc模式必须提供一个向量
-encrypt,err = AES.mcrypt_generic(td, "Very important message")
+
+lcp = AES.mcrypt_module_open("rijndael-128", "cbc")  -- 以cbc模式加密
+
+AES.mcrypt_generic_init(lcp, "1234567890123456", "abcdefghijklmnop", 1) -- cbc模式必须提供一个向量
+encrypt,err = AES.mcrypt_generic(lcp, "We meet at old place!")
+
 print(AES.bintohex(encrypt))
- 
-AES.mcrypt_generic_init(td, "1234567890123456", "abcdefghijklmnop") -- cbc模式必须提供一个向量
-print(AES.mdecrypt_generic(td, encrypt))
- 
-AES.mcrypt_generic_deinit(td)
-AES.mcrypt_module_close(td)
+
+AES.mcrypt_generic_init(lcp, "1234567890123456", "abcdefghijklmnop", 1) -- cbc模式必须提供一个向量
+print(AES.mdecrypt_generic(lcp, encrypt))
+
+AES.mcrypt_generic_deinit(lcp)
+AES.mcrypt_module_close(lcp)
 
 ```
 
