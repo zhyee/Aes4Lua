@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 #include "utils.h"
-#include "AES4Lua.h"
+#include "Aes4Lua.h"
 
 #define PADDING_MODE_ZERO   0
 #define PADDING_MODE_PKCS5  1
@@ -345,23 +345,22 @@ static int push_error(lua_State *L, const char *errmsg)
  */
 static int bintohex(lua_State *L)
 {
+    const char *hexc = "0123456789abcdef";
 	int i;
 	size_t len;
 	const unsigned char *bin = lua_tolstring(L, 1, &len);
-	char *hex = calloc(1, len * 2 + 1);
-	char buf[2];
+	char *hex = calloc(1, len * 2);
+    unsigned char tmp;
 	for(i = 0; i < len; i++)
-	{	
-		memset(buf, 0, 2);
-		sprintf(buf, "%x", bin[i]);
-		if (buf[1] == '\0')
-		{
-			buf[1] = buf[0];
-			buf[0] = '0';
-		}
-		memcpy(hex+(i * 2), buf, 2);			
+	{
+        tmp = bin[i] >> 4;
+        hex[i*2] = hexc[tmp];
+
+        tmp = bin[i] & 0x0f;
+        hex[i*2+1] = hexc[tmp];		
 	}
-	lua_pushlstring(L, hex, len * 2 + 1);
+    
+	lua_pushlstring(L, hex, len * 2);
 	free(hex);
 	return 1;
 }
@@ -372,8 +371,8 @@ static int bintohex(lua_State *L)
  */
 static int hextobin(lua_State *L)
 {
-	int i;
-	char c;
+	int i, j;
+	char c, tmp1, tmp2;
 	size_t hexlen, binlen;
 	const char *hex = lua_tolstring(L, 1, &hexlen);
 	if (hexlen % 2 != 0)
@@ -383,19 +382,18 @@ static int hextobin(lua_State *L)
 
 	binlen = hexlen / 2;
 	char *bin = calloc(binlen, 1);
-	for(i = 0; i < hexlen; i++)
+	for(i = 0, j = 0; i < hexlen; i+=2, j++)
 	{
-		if (i % 2 == 0)
-		{
-			c = 0;
-			c += hexchartoint(hex[i]) * 16;		
-		}	
-		else
-		{
-			c += hexchartoint(hex[i]);
-			bin[i/2] = c;
-		}
+        tmp1 = hexchartoint(hex[i]);
+        tmp2 = hexchartoint(hex[i+1]);
+        if (tmp1 < 0 || tmp2 < 0)
+        {
+            free(bin);
+            return push_error(L, "hextobin: the hex string include illegal hex char");
+        }
+        bin[j] = (tmp1 << 4) + tmp2;    
 	}
+
 	lua_pushlstring(L, bin, binlen);
 	free(bin);
 	return 1;
